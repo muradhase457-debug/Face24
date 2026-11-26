@@ -1207,12 +1207,20 @@ async function handleLiveNews(request, env) {
 // ---------- Murad Net: share Murad's home WiFi through the website ----------
 // KV keys (env.LAYOUT): net:owner {hash, createdAt}, net:state {on, note, updatedAt},
 // net:details {invite, wg, updatedAt}, net:joins {count, lastAt}, net:rl:<ip> {n}
+// v2 (two-way): net:sharer:<slug> {name, hash, invite, wg, on, createdAt, updatedAt},
+// net:sharer-index {slugs}, net:blocked {names}, net:joinlog {entries:[{name, at}]}
 const NET_OWNER_KEY = "net:owner";
 const NET_STATE_KEY = "net:state";
 const NET_DETAILS_KEY = "net:details";
 const NET_JOINS_KEY = "net:joins";
 const NET_JOIN_LIMIT = 10;      // max join attempts per IP per minute
 const NET_JOIN_WINDOW_S = 60;
+const NET_SHARER_PREFIX = "net:sharer:";
+const NET_SHARER_INDEX_KEY = "net:sharer-index";
+const NET_BLOCKED_KEY = "net:blocked";
+const NET_JOINLOG_KEY = "net:joinlog";
+const NET_MAX_SHARERS = 20;
+const NET_MAX_LOG = 50;
 
 async function sha256Hex(s) {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(s)));
@@ -1294,17 +1302,19 @@ async function handleNetDetails(request, env) {
   return json({ ok: true });
 }
 
-// GET /api/net/stats (owner key) — join count + last join time + sharing state
+// GET /api/net/stats (owner key) — join count + last join time + sharing state + join log + blocked names
 async function handleNetStats(request, env) {
   if (request.method !== "GET") return json({ error: "GET only" }, 405);
   if (!env || !env.LAYOUT) return netKvDown();
   if (!(await netCheckKey(request, env))) return json({ error: "Wrong owner password" }, 401);
   const j = (await netKvGet(env, NET_JOINS_KEY)) || {};
   const st = (await netKvGet(env, NET_STATE_KEY)) || {};
-  return json({ ok: true, joins: j.count || 0, lastJoinAt: j.lastAt || 0, on: st.on === true });
+  const logRec = (await netKvGet(env, NET_JOINLOG_KEY)) || {};
+  const log = Array.isArray(logRec.entries) ? logRec.entries.slice(0, 20) : [];
+  return json({ ok: true, joins: j.count || 0, lastJoinAt: j.lastAt || 0, on: st.on === true, log, blocked: await netBlockedList(env) });
 }
 
-// POST /api/net/join {password} — friend connects; details only when sharing is ON
+// POST /api/net/join {password, name} — friend connects; details only when sharing is ON
 async function handleNetJoin(request, env) {
   if (request.method !== "POST") return json({ error: "POST only" }, 405);
   if (!env || !env.LAYOUT) return netKvDown();
@@ -1316,15 +1326,138 @@ async function handleNetJoin(request, env) {
   const n = (rl.n || 0) + 1;
   await netKvPut(env, rlKey, { n }, NET_JOIN_WINDOW_S);
   if (n > NET_JOIN_LIMIT) return json({ error: "Too many tries — wait a minute and try again" }, 429);
+  const name = String(body.name || "").trim().slice(0, 40);
+  if (name.length < 2) return json({ error: "Type your name first (at least 2 characters)" }, 400);
   const stored = await netOwnerHash(env);
   if (!stored) return json({ error: "Sharing is not set up yet" }, 503);
   if (!sameStr(await sha256Hex(String(body.password || "")), stored)) return json({ error: "Wrong password" }, 401);
+  const blocked = await netBlockedList(env);
+  if (blocked.includes(name.toLowerCase())) return json({ error: "You are blocked — ask Murad to unblock you" }, 403);
   const st = (await netKvGet(env, NET_STATE_KEY)) || {};
   if (st.on !== true) return json({ ok: false, off: true });
   const d = (await netKvGet(env, NET_DETAILS_KEY)) || {};
   const j = (await netKvGet(env, NET_JOINS_KEY)) || {};
   await netKvPut(env, NET_JOINS_KEY, { count: (j.count || 0) + 1, lastAt: Date.now() });
-  return json({ ok: true, invite: typeof d.invite === "string" ? d.invite : "", wg: typeof d.wg === "string" ? d.wg : "", detailsReady: !!(d.invite || d.wg) });
+  const logRec = (await netKvGet(env, NET_JOINLOG_KEY)) || {};
+  const entries = Array.isArray(logRec.entries) ? logRec.entries : [];
+  entries.unshift({ name, at: Date.now() });
+  await netKvPut(env, NET_JOINLOG_KEY, { entries: entries.slice(0, NET_MAX_LOG) });
+  return json({ ok: true, invite: typeof d.invite === "string" ? d.invite : "", wg: typeof d.wg === "string" ? d.wg : "", detailsReady: !!(d.invite || d.wg), take: await netTakeList(env) });
+}
+
+// ---------- Murad Net v2: two-way sharing ----------
+// A friend can be a sharer too: they set their own name + password + invite link
+// and turn their own sharing ON/OFF. The owner sees every sharer and can block
+// anyone by name. Only SHA-256 fingerprints of passwords are stored — never passwords.
+function netSlug(name) {
+  return String(name || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+}
+async function netSharerIndex(env) {
+  const rec = await netKvGet(env, NET_SHARER_INDEX_KEY);
+  const arr = rec && Array.isArray(rec.slugs) ? rec.slugs : [];
+  return arr.filter((s) => typeof s === "string");
+}
+async function netSharerGet(env, slug) {
+  if (!slug) return null;
+  return await netKvGet(env, NET_SHARER_PREFIX + slug);
+}
+async function netBlockedList(env) {
+  const rec = await netKvGet(env, NET_BLOCKED_KEY);
+  return rec && Array.isArray(rec.names) ? rec.names : [];
+}
+async function netTakeList(env) {
+  // Friends who are sharing right now (ON only) — names + their invite links
+  const slugs = await netSharerIndex(env);
+  const out = [];
+  for (const slug of slugs) {
+    const s = await netSharerGet(env, slug);
+    if (s && s.on === true) out.push({ name: s.name, invite: s.invite || "", wg: s.wg || "" });
+  }
+  return out;
+}
+
+// POST /api/net/friend-setup {name, password, invite, wg} — a friend starts sharing
+async function handleNetFriendSetup(request, env) {
+  if (request.method !== "POST") return json({ error: "POST only" }, 405);
+  if (!env || !env.LAYOUT) return netKvDown();
+  let body = {};
+  try { body = await request.json(); } catch (e) { return json({ error: "Invalid request" }, 400); }
+  const name = String(body.name || "").trim().slice(0, 40);
+  const pw = String(body.password || "");
+  if (name.length < 2) return json({ error: "Type your name (at least 2 characters)" }, 400);
+  if (pw.length < 4 || pw.length > 64) return json({ error: "Password must be 4 to 64 characters" }, 400);
+  const slug = netSlug(name);
+  if (!slug) return json({ error: "Type a name with letters or numbers" }, 400);
+  const slugs = await netSharerIndex(env);
+  if (slugs.includes(slug)) return json({ error: "That name is already sharing — pick another name, or load your saved sharing below" }, 409);
+  if (slugs.length >= NET_MAX_SHARERS) return json({ error: "Too many people are sharing already" }, 400);
+  const rec = { name, hash: await sha256Hex(pw), invite: String(body.invite || "").slice(0, 500), wg: String(body.wg || "").slice(0, 8000), on: true, createdAt: Date.now(), updatedAt: Date.now() };
+  if (!(await netKvPut(env, NET_SHARER_PREFIX + slug, rec))) return netKvDown();
+  await netKvPut(env, NET_SHARER_INDEX_KEY, { slugs: slugs.concat([slug]) });
+  return json({ ok: true, name });
+}
+
+// POST /api/net/friend-load {name, password} — a friend loads their own sharing
+async function handleNetFriendLoad(request, env) {
+  if (request.method !== "POST") return json({ error: "POST only" }, 405);
+  if (!env || !env.LAYOUT) return netKvDown();
+  let body = {};
+  try { body = await request.json(); } catch (e) { return json({ error: "Invalid request" }, 400); }
+  const s = await netSharerGet(env, netSlug(body.name));
+  if (!s) return json({ error: "No sharing found under that name" }, 404);
+  if (!sameStr(await sha256Hex(String(body.password || "")), s.hash)) return json({ error: "Wrong password" }, 401);
+  return json({ ok: true, name: s.name, invite: s.invite || "", wg: s.wg || "", on: s.on === true, updatedAt: s.updatedAt || 0 });
+}
+
+// POST /api/net/friend-state {name, password, invite, wg, on} — a friend updates their sharing
+async function handleNetFriendState(request, env) {
+  if (request.method !== "POST") return json({ error: "POST only" }, 405);
+  if (!env || !env.LAYOUT) return netKvDown();
+  let body = {};
+  try { body = await request.json(); } catch (e) { return json({ error: "Invalid request" }, 400); }
+  const s = await netSharerGet(env, netSlug(body.name));
+  if (!s) return json({ error: "No sharing found under that name" }, 404);
+  if (!sameStr(await sha256Hex(String(body.password || "")), s.hash)) return json({ error: "Wrong password" }, 401);
+  const next = Object.assign({}, s, {
+    invite: typeof body.invite === "string" ? body.invite.slice(0, 500) : s.invite,
+    wg: typeof body.wg === "string" ? body.wg.slice(0, 8000) : s.wg,
+    on: typeof body.on === "boolean" ? body.on : s.on,
+    updatedAt: Date.now(),
+  });
+  await netKvPut(env, NET_SHARER_PREFIX + netSlug(body.name), next);
+  return json({ ok: true, on: next.on === true });
+}
+
+// GET /api/net/sharers (owner key) — every friend sharer, for the Owner tab
+async function handleNetSharers(request, env) {
+  if (request.method !== "GET") return json({ error: "GET only" }, 405);
+  if (!env || !env.LAYOUT) return netKvDown();
+  if (!(await netCheckKey(request, env))) return json({ error: "Wrong owner password" }, 401);
+  const slugs = await netSharerIndex(env);
+  const out = [];
+  for (const slug of slugs) {
+    const s = await netSharerGet(env, slug);
+    if (s) out.push({ name: s.name, on: s.on === true, invite: s.invite || "", wg: s.wg || "", updatedAt: s.updatedAt || 0 });
+  }
+  return json({ ok: true, sharers: out });
+}
+
+// POST /api/net/block {name, blocked} (owner key) — block / unblock a person by name
+async function handleNetBlock(request, env) {
+  if (request.method !== "POST") return json({ error: "POST only" }, 405);
+  if (!env || !env.LAYOUT) return netKvDown();
+  if (!(await netCheckKey(request, env))) return json({ error: "Wrong owner password" }, 401);
+  let body = {};
+  try { body = await request.json(); } catch (e) { return json({ error: "Invalid request" }, 400); }
+  const name = String(body.name || "").trim().slice(0, 40);
+  if (name.length < 2) return json({ error: "Type a name to block" }, 400);
+  const blocked = await netBlockedList(env);
+  const low = name.toLowerCase();
+  let next;
+  if (body.blocked === true) next = blocked.includes(low) ? blocked : blocked.concat([low]);
+  else next = blocked.filter((n) => n !== low);
+  await netKvPut(env, NET_BLOCKED_KEY, { names: next });
+  return json({ ok: true, blocked: next });
 }
 
 function hashStr(s) {
@@ -2017,6 +2150,11 @@ export default {
     if (url.pathname === "/api/net/details") return handleNetDetails(request, env);
     if (url.pathname === "/api/net/stats") return handleNetStats(request, env);
     if (url.pathname === "/api/net/join") return handleNetJoin(request, env);
+    if (url.pathname === "/api/net/friend-setup") return handleNetFriendSetup(request, env);
+    if (url.pathname === "/api/net/friend-load") return handleNetFriendLoad(request, env);
+    if (url.pathname === "/api/net/friend-state") return handleNetFriendState(request, env);
+    if (url.pathname === "/api/net/sharers") return handleNetSharers(request, env);
+    if (url.pathname === "/api/net/block") return handleNetBlock(request, env);
     if (url.pathname.startsWith("/api/")) return json({ error: "Not found" }, 404);
     // v10 proxy: /erp/ords/... -> asol ERP
     if (url.pathname === "/erp" || url.pathname.startsWith("/erp/")) {
