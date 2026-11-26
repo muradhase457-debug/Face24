@@ -1334,7 +1334,10 @@ async function handleNetJoin(request, env) {
   const blocked = await netBlockedList(env);
   if (blocked.includes(name.toLowerCase())) return json({ error: "You are blocked — ask Murad to unblock you" }, 403);
   const st = (await netKvGet(env, NET_STATE_KEY)) || {};
-  if (st.on !== true) return json({ ok: false, off: true });
+  // v3: the Take list does NOT depend on Murad's switch — it only depends on
+  // each friend sharer's own ON/OFF. Only Murad's own details are gated here.
+  const take = await netTakeList(env);
+  if (st.on !== true) return json({ ok: false, off: true, take });
   const d = (await netKvGet(env, NET_DETAILS_KEY)) || {};
   const j = (await netKvGet(env, NET_JOINS_KEY)) || {};
   await netKvPut(env, NET_JOINS_KEY, { count: (j.count || 0) + 1, lastAt: Date.now() });
@@ -1342,7 +1345,7 @@ async function handleNetJoin(request, env) {
   const entries = Array.isArray(logRec.entries) ? logRec.entries : [];
   entries.unshift({ name, at: Date.now() });
   await netKvPut(env, NET_JOINLOG_KEY, { entries: entries.slice(0, NET_MAX_LOG) });
-  return json({ ok: true, invite: typeof d.invite === "string" ? d.invite : "", wg: typeof d.wg === "string" ? d.wg : "", detailsReady: !!(d.invite || d.wg), take: await netTakeList(env) });
+  return json({ ok: true, invite: typeof d.invite === "string" ? d.invite : "", wg: typeof d.wg === "string" ? d.wg : "", detailsReady: !!(d.invite || d.wg), take });
 }
 
 // ---------- Murad Net v2: two-way sharing ----------

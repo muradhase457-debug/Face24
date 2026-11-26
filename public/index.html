@@ -141,6 +141,10 @@
   .user-row .meta { font-size: 0.82rem; color: #9db8a8; margin-top: 0.15rem; line-height: 1.5; }
   .btn-sm { padding: 0.5rem 0.9rem; font-size: 0.9rem; }
   .btn-danger { border-color: rgba(255,154,154,0.6); background: linear-gradient(160deg, #4d0f0f, #2e0808); box-shadow: none; }
+  .dot-ok { color: #7dffb0; font-weight: 800; }
+  .dot-bad { color: #ff9a9a; font-weight: 800; }
+  .dot-mid { color: #ffd479; font-weight: 800; }
+  .check-line { font-weight: 700; color: #d9ffe9; }
 </style>
 </head>
 <body>
@@ -1098,7 +1102,7 @@ function render() {
 function takeRowsHtml() {
   return UI.take.map((t) => `
     <div class="user-row"><div class="who"><div class="nm">${esc(t.name)}</div><div class="meta">Sharing is ON</div></div>
-    <div class="row">${t.invite ? `<a class="btn btn-sm" href="${esc(t.invite)}" target="_blank" rel="noopener">Open</a><button class="btn btn-sm btn-ghost" data-act="copy-text" data-text="${esc(t.invite)}">Copy</button>` : ""}
+    <div class="row">${t.invite ? `<button class="btn btn-sm" data-act="copy-open" data-href="${esc(t.invite)}">Open</button><button class="btn btn-sm btn-ghost" data-act="copy-text" data-text="${esc(t.invite)}">Copy</button>` : ""}
     ${(!t.invite && t.wg) ? `<button class="btn btn-sm btn-ghost" data-act="copy-text" data-text="${esc(t.wg)}">Copy config</button>` : ""}
     ${(!t.invite && !t.wg) ? `<span class="small">No invite link saved</span>` : ""}</div></div>`).join("");
 }
@@ -1112,7 +1116,7 @@ function actionPanelHtml() {
       <p class="small mt1">Your invite link</p>
       <p class="mt1" style="word-break:break-all">${esc(UI.details.invite)}</p>
       <div class="row mt2">
-        <a class="btn" href="${esc(UI.details.invite)}" target="_blank" rel="noopener">Open invite</a>
+        <button class="btn" data-act="copy-open" data-href="${esc(UI.details.invite)}">Open invite</button>
         <button class="btn btn-ghost" data-act="copy-invite">Copy link</button>
       </div>
       <p class="msg">${esc(UI.actionMsg)}</p></section>`;
@@ -1150,7 +1154,7 @@ function sharersHtml() {
   else if (!UI.sharers.length) h += `<p class="mt1">No friend is sharing yet. A friend can set it up on the “Share my net” tab — name, password, invite link, one tap.</p>`;
   else h += UI.sharers.map((s) => `
     <div class="user-row"><div class="who"><div class="nm">${esc(s.name)}</div><div class="meta">${s.on ? "Sharing is ON" : "Sharing is OFF"} · ${esc(timeStr(s.updatedAt))}</div></div>
-    <div class="row">${s.invite ? `<a class="btn btn-sm" href="${esc(s.invite)}" target="_blank" rel="noopener">Open</a><button class="btn btn-sm btn-ghost" data-act="copy-text" data-text="${esc(s.invite)}">Copy</button>` : `<span class="small">No invite link</span>`}</div></div>`).join("");
+    <div class="row">${s.invite ? `<button class="btn btn-sm" data-act="copy-open" data-href="${esc(s.invite)}">Open</button><button class="btn btn-sm btn-ghost" data-act="copy-text" data-text="${esc(s.invite)}">Copy</button>` : `<span class="small">No invite link</span>`}</div></div>`).join("");
   h += `</section>`;
   return h;
 }
@@ -1176,10 +1180,57 @@ function manualHtml() {
     const isBlocked = (UI.blocked || []).includes(String(r.name || "").toLowerCase());
     const inv = r.sharer && r.sharer.invite ? r.sharer.invite : "";
     return `<div class="user-row"><div class="who"><div class="nm">${esc(r.name)}</div><div class="meta">Last join: ${esc(timeStr(r.lastAt))}<br>Sharing: ${r.sharer ? (r.sharer.on ? "ON" : "OFF") : "Not sharing"}${isBlocked ? ' · <span class="bad">Blocked</span>' : ""}</div></div>
-    <div class="row">${inv ? `<a class="btn btn-sm" href="${esc(inv)}" target="_blank" rel="noopener">Manual connect</a><button class="btn btn-sm btn-ghost" data-act="copy-text" data-text="${esc(inv)}">Copy</button>` : `<span class="small">No invite link</span>`}
+    <div class="row">${inv ? `<button class="btn btn-sm" data-act="copy-open" data-href="${esc(inv)}">Manual connect</button><button class="btn btn-sm btn-ghost" data-act="copy-text" data-text="${esc(inv)}">Copy</button>` : `<span class="small">No invite link</span>`}
     <button class="btn btn-sm ${isBlocked ? "" : "btn-danger"}" data-act="${isBlocked ? "unblock" : "block"}" data-name="${esc(r.name)}">${isBlocked ? "Unblock" : "Disconnect"}</button></div></div>`;
   }).join("");
   h += `<p class="small mt2">Tip: rename your phone in the Tailscale app (for example “Murad-Phone”) so your friends recognise it in the exit-node list. To share your own net, turn on “Run as exit node” in Tailscale and keep your phone on WiFi and charging.</p></section>`;
+  return h;
+}
+
+/* ── "No internet? Check these 3" — same box on Owner + Friend tabs ── */
+function noNetHtml() {
+  return `<section class="panel">
+    <h2>No internet? Check these 3</h2>
+    <ol>
+      <li><span class="step-num">1</span><b>Giver's phone:</b> Tailscale ON + <b>Run as exit node</b> ON + on WiFi + charging.</li>
+      <li><span class="step-num">2</span><b>Taker's phone:</b> Tailscale ON + exit node picked (the giver's phone name). This is the #1 cause: Tailscale showing “Connected” alone gives <b>no internet</b> — the exit-node pick is what carries it.</li>
+      <li><span class="step-num">3</span><b>Both phones awake:</b> Android can stop Tailscale in the background — keep the app open on both phones.</li>
+    </ol>
+    <p class="small mt2">This website cannot see Tailscale's exit-node state — check the Tailscale app itself.</p>
+  </section>`;
+}
+
+/* ── "Check my setup" — admin self-test, Owner tab. No new endpoint: it reads
+   the state / details / stats the page already loads. Green = ready, red = tap
+   the button next to it. Never shows the invite link or any password here. ── */
+function checkRow(kind, text, fixBtn) {
+  const dot = kind === "ok" ? `<span class="dot-ok">●</span>` : kind === "bad" ? `<span class="dot-bad">●</span>` : `<span class="dot-mid">●</span>`;
+  return `<div class="user-row"><div class="who"><div class="check-line">${dot} ${esc(text)}</div></div><div class="row">${fixBtn || ""}</div></div>`;
+}
+function checkHtml() {
+  const on = UI.state ? UI.state.on === true : null;
+  const hasInvite = !!(UI.details && UI.details.invite);
+  const joins = UI.stats ? (UI.stats.joins || 0) : null;
+  let h = `<section class="panel"><h2>Check my setup</h2>
+    <p class="mt1">Test everything without a second phone. Green means ready, red means tap the button next to it.</p>`;
+  // 1. Sharing switch
+  if (on === true) h += checkRow("ok", "Sharing is ON", "");
+  else if (on === false) h += checkRow("bad", "Sharing is OFF", UI.key ? `<button class="btn btn-sm" data-act="toggle-share">Turn sharing ON</button>` : `<button class="btn btn-sm" data-act="focus-unlock">Unlock</button>`);
+  else h += checkRow("mid", "Sharing state — open this page once to check", "");
+  // 2. Invite link saved?
+  if (!UI.hasOwner) h += checkRow("mid", "Invite link — set the owner password first", "");
+  else if (!UI.key) h += checkRow("mid", "Invite link — unlock the Owner tab to check", `<button class="btn btn-sm" data-act="focus-unlock">Unlock</button>`);
+  else if (hasInvite) h += checkRow("ok", "Invite link saved", "");
+  else h += checkRow("bad", "No invite link saved — friends get nothing", `<button class="btn btn-sm" data-act="focus-invite">Add invite link</button>`);
+  // 3. Owner password set?
+  if (UI.hasOwner) h += checkRow("ok", "Owner password set", "");
+  else h += checkRow("bad", "Owner password not set yet", `<button class="btn btn-sm" data-act="focus-setup">Set password</button>`);
+  // 4. Friends joined
+  if (!UI.hasOwner) h += checkRow("mid", "Friends joined — set the owner password first", "");
+  else if (joins === null) h += checkRow("mid", "Friends joined — unlock the Owner tab to check", `<button class="btn btn-sm" data-act="focus-unlock">Unlock</button>`);
+  else if (joins > 0) h += checkRow("ok", joins + (joins === 1 ? " friend joined" : " friends joined"), "");
+  else h += checkRow("bad", "No one has joined yet", `<button class="btn btn-sm" data-act="give">Show my invite link</button>`);
+  h += `<div class="row mt2"><button class="btn btn-ghost" data-act="refresh-owner">Recheck</button></div></section>`;
   return h;
 }
 
@@ -1197,6 +1248,7 @@ function ownerHtml() {
       <button class="btn btn-block" data-act="setup">Set share password</button>
       <p class="msg" id="ownerMsg">${esc(UI.ownerMsg)}</p>
     </section>`;
+    h += checkHtml();
     h += howHtml("owner");
     return h;
   }
@@ -1218,6 +1270,9 @@ function ownerHtml() {
     </div>
     <p class="msg" id="ownerMsg">${esc(UI.ownerMsg)}</p>
   </section>`;
+
+  h += checkHtml();
+  h += noNetHtml();
 
   h += `
   <section class="panel">
@@ -1363,6 +1418,7 @@ function friendHtml() {
     <button class="btn btn-block" data-act="join">Connect</button>
     <p class="msg" id="friendMsg">${esc(UI.friendMsg)}</p>
   </section>`;
+  h += noNetHtml();
   h += `
   <section class="panel">
     <h2>Take from a friend</h2>
@@ -1378,7 +1434,7 @@ function friendHtml() {
       ${f.invite ? `
       <h3>Path A — Tailscale</h3>
       <p class="mt1">Tap the invite link, join Murad's network, then set the exit node to Murad's phone and turn Tailscale ON.</p>
-      <a class="btn btn-block" href="${esc(f.invite)}" target="_blank" rel="noopener">Open Tailscale invite</a>` : ""}
+      <button class="btn btn-block" data-act="copy-open" data-href="${esc(f.invite)}">Open Tailscale invite</button>` : ""}
       ${f.wg ? `
       <h3>Path B — WireGuard</h3>
       <p class="mt1">Install the WireGuard app, then scan the QR or import the config file.</p>
@@ -1577,7 +1633,13 @@ async function doJoin() {
   if (r.status === 429) { UI.friendMsg = "Too many tries — wait a minute and try again."; render(); return; }
   if (r.status === 503) { UI.friendMsg = "Sharing is not set up yet — ask Murad to set it up first."; render(); return; }
   if (!r.ok) { UI.friendMsg = (r.data && r.data.error) || "Could not connect — try again."; render(); return; }
-  if (r.data.off) { UI.friendMsg = "Sharing is OFF right now — ask Murad to turn it on."; render(); return; }
+  if (r.data.off) {
+    // v3: Murad's switch gates only HIS link. Friends who are sharing still
+    // show below — taking depends on the friend's own switch, not Murad's.
+    UI.take = Array.isArray(r.data.take) ? r.data.take : [];
+    UI.friendMsg = UI.take.length ? "Murad's sharing is OFF — you cannot get his link right now, but friends below are still sharing." : "Sharing is OFF right now — ask Murad to turn it on.";
+    render(); return;
+  }
   UI.friend = { invite: r.data.invite || "", wg: r.data.wg || "", detailsReady: !!r.data.detailsReady };
   UI.take = Array.isArray(r.data.take) ? r.data.take : [];
   UI.friendMsg = "";
@@ -1691,6 +1753,20 @@ function wire() {
     else if (act === "goto-friend") { UI.tab = "friend"; render(); }
     else if (act === "copy-invite") { if (UI.details && UI.details.invite) { const ok = await copyText(UI.details.invite); UI.actionMsg = ok ? "Invite link copied." : "Copy did not work — long-press the link and copy it."; render(); } }
     else if (act === "copy-text") { const ok = await copyText(el.dataset.text || ""); const m = ok ? "Copied." : "Copy did not work — long-press and copy it."; UI.actionMsg = m; if (UI.tab === "owner") UI.ownerMsg = m; else if (UI.tab === "friend") UI.friendMsg = m; render(); }
+    else if (act === "copy-open") {
+      // one tap: open the invite AND copy it (open first, so the popup is not blocked)
+      const href = el.dataset.href || "";
+      if (!href) return;
+      const w = window.open(href, "_blank", "noopener");
+      const ok = await copyText(href);
+      const m = ok ? "Link copied and opened." : (w ? "Link opened." : "Link could not be opened — long-press the link and open it.");
+      UI.actionMsg = m;
+      if (UI.tab === "owner") UI.ownerMsg = m; else if (UI.tab === "friend") UI.friendMsg = m;
+      render();
+    }
+    else if (act === "focus-invite") { const i = $("inviteLink"); if (i) { if (i.scrollIntoView) i.scrollIntoView(); if (i.focus) i.focus(); } }
+    else if (act === "focus-setup") { const i = $("setupPw"); if (i) { if (i.scrollIntoView) i.scrollIntoView(); if (i.focus) i.focus(); } }
+    else if (act === "focus-unlock") { const i = $("ownerPw"); if (i) { if (i.scrollIntoView) i.scrollIntoView(); if (i.focus) i.focus(); } }
     else if (act === "friend-setup") { doFriendSetup(); }
     else if (act === "friend-load") { doFriendLoad(); }
     else if (act === "friend-toggle") { doFriendToggle(); }
